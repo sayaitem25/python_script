@@ -1,0 +1,50 @@
+import os
+import zipfile
+import re
+
+# Folder yang berisi subfolder: 2025Nov21, 2025Aug03, dst
+root_path = r"C:\path\to\root_folder"
+
+# Folder output untuk ZIP
+output_path = r"C:\path\to\output_zips"
+
+# Pola folder: 2025Nov21 → extract tahun = 2025
+pattern = re.compile(r"^(\d{4})[A-Za-z]{3}\d{2}$")
+
+# Kelompok folder sesuai tahun
+year_groups = {}
+
+for folder_name in os.listdir(root_path):
+   match = pattern.match(folder_name)
+
+   if match:
+       year = match.group(1)
+       folder_path = os.path.join(root_path, folder_name)
+
+       if os.path.isdir(folder_path):
+           year_groups.setdefault(year, []).append(folder_path)
+
+# ZIP per tahun
+for year, folder_paths in year_groups.items():
+   zip_filename = os.path.join(output_path, f"{year}.zip")
+
+   print(f"\n==> Membuat ZIP: {zip_filename}")
+
+   # ZIP dengan kompresi (lebih kecil)
+   with zipfile.ZipFile(zip_filename, "w", zipfile.ZIP_DEFLATED) as zipf:
+
+       for folder in folder_paths:
+           folder_name = os.path.basename(folder)
+
+           # Walk seluruh isi folder & subfolder
+           for root, dirs, files in os.walk(folder):
+               for file in files:
+                   fullpath = os.path.join(root, file)
+
+                   # Struktur ZIP: tetap mempertahankan nama subfolder tanggal
+                   arcname = os.path.relpath(fullpath, root_path)
+
+                   zipf.write(fullpath, arcname)
+                   print(f"  + Added: {arcname}")
+
+print("\nSelesai ZIP per tahun!")
