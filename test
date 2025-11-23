@@ -388,11 +388,11 @@ with open(fr"\\10.232.27.11\cctr$\Report\Scripts\AUTOMATION_DAILY_IDCCTR_PERFORM
 # %%
 #%% Configuration Auto Email
 
-email_address= 'idcctrwfm@dbs.com'
-uname= 'reg1\idcctrwfm'
-email_encr= 'U2Vwb2N0MjAyNQ=='
+email_address= ''
+uname= ''
+email_encr= ''
 
-host = 'websvca.1bank.dbs.com'
+host = ''
 
 
 def send_email(uname,email_encr,email_address,host,header,html_file_path,email_send,email_cc, attachment_paths):
@@ -434,8 +434,8 @@ def send_email(uname,email_encr,email_address,host,header,html_file_path,email_s
     m.send_and_save()
 
 # %%
-# email_list = ['dbsit&ocbgcustomercentre-operations@1bank.dbs.com']
-# email_cc = ['dbsit&ocbgcustomercentreresourceplanning@1bank.dbs.com','dbsit&omiscctr@1bank.dbs.com','dbsit&ocbgcustomercentremanagementteam@1bank.dbs.com']
+# email_list = ['']
+# email_cc = ['']
 # subject_email = fr'EOD IDCCTR PERFORMANCE {(datetime.now()-timedelta(1)).strftime('%d %B %Y')}'
 # html_path = fr"\\10.232.27.11\cctr$\Report\Scripts\AUTOMATION_DAILY_IDCCTR_PERFORMANCE\EOD_PERFORMANCE\summary_eod_{(datetime.now()-timedelta(1)).strftime('%Y%m%d')}.html"
 # attachment_paths = [html_path]
