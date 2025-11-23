@@ -231,39 +231,54 @@ summary_call_chat_non_rf = summary_call_chat_non_rf[['Call Type','ServiceLevelCa
 summary_call_chat_non_rf = summary_call_chat_non_rf.rename(columns={'Call Type':'GROUP'})
 
 # %%
-summary_call_chat_with_rf = (call_chat_with_rf.groupby('Call Type', as_index=False).agg({
-    'ServiceLevelCallsOffered':'sum',
-    'Answer':'sum',
-    'Answered':'sum',
-    'Abandoned':'sum',
-    'logged_time_sec':'sum',
-    'talk_time_sec':'sum',
-    'hold_time_sec':'sum',
-    'wrap_up_sec':'sum',
-    'total_handling_time':'sum'
-}))
+# ---------------------------------------------------
+# === HIGHLIGHT FUNCTION WITH CUSTOM THRESHOLDS ===
+# ---------------------------------------------------
+
+def highlight_cells(row):
+   styles = [''] * len(row)
+
+   group = row.get('GROUP', '')
+   channel = row.get('Channel', '')
+
+   # --- Threshold by GROUP ---
+   group_thresholds = {
+       'CENTREWIDE': 80,
+       'CALL - CARD': 80,
+       'CALL - LOAN': 80,
+       'CALL - BANK': 90,
+       'CALL - DIGI': 80
+   }
+
+   if group in group_thresholds:
+       sl_value = row['Service Level']
+       sl_num = float(sl_value.replace('%',''))
+       if sl_num < group_thresholds[group]:
+           idx = row.index.get_loc('Service Level')
+           styles[idx] = 'background-color:#ffcccc; color:#b30000; font-weight:bold;'
+
+   # --- Threshold by CHANNEL ---
+   if channel in ['CALL','CHAT']:
+       # SL < 80%
+       sl_value = row['Service Level']
+       sl_num = float(sl_value.replace('%',''))
+       if sl_num < 80:
+           idx = row.index.get_loc('Service Level')
+           styles[idx] = 'background-color:#ffcccc; color:#b30000; font-weight:bold;'
+
+       # AHT Threshold
+       aht_value = row['AHT']
+       if (channel == 'CALL' and aht_value > 385) or \
+          (channel == 'CHAT' and aht_value > 500):
+           idx = row.index.get_loc('AHT')
+           styles[idx] = 'background-color:#ffcccc; color:#b30000; font-weight:bold;'
+
+   return styles
 
 # %%
-def safe_divide(df, num_col, den_col):
-   result = df[num_col] / df[den_col]
-   result = result.replace([np.inf, -np.inf], 0)
-   result = result.fillna(0)
-   return result.round(0).astype(int)
-
-summary_call_chat_with_rf['AHT'] = safe_divide(summary_call_chat_with_rf, 'total_handling_time', 'Answered')
-summary_call_chat_with_rf['Service Level'] = ((summary_call_chat_with_rf['Answer'] / summary_call_chat_with_rf['ServiceLevelCallsOffered']) * 100).round(1).fillna(0).astype(str) + '%'
-summary_call_chat_with_rf['Talk Time'] = safe_divide(summary_call_chat_with_rf, 'talk_time_sec', 'Answered')
-summary_call_chat_with_rf['Hold Time'] = safe_divide(summary_call_chat_with_rf, 'hold_time_sec', 'Answered')
-summary_call_chat_with_rf['Wrap Up Time'] = safe_divide(summary_call_chat_with_rf, 'wrap_up_sec', 'Answered')
-summary_call_chat_with_rf = summary_call_chat_with_rf.fillna(0)
-summary_call_chat_with_rf = summary_call_chat_with_rf[['Call Type','ServiceLevelCallsOffered','Service Level','AHT','Talk Time','Hold Time','Wrap Up Time','Abandoned']]
-summary_call_chat_with_rf = summary_call_chat_with_rf.rename(columns={'Call Type':'GROUP'})
-
-# %%
-summary_centrewide_to_html = summary_centrewide.to_html(index=False, border=0, classes='my-table')
-summary_call_chat_to_html = summary_call_chat.to_html(index=False, border=0, classes='my-table')
-summary_call_chat_non_rf_to_html = summary_call_chat_non_rf.to_html(index=False, border=0, classes='my-table')
-summary_call_chat_with_rf_to_html = summary_call_chat_with_rf.to_html(index=False, border=0, classes='my-table')
+summary_centrewide_to_html = summary_centrewide.style.apply(highlight_cells).to_html(index=False, border=0, classes='my-table')
+summary_call_chat_to_html = summary_call_chat.style.apply(highlight_cells, axis=1).to_html(index=False, border=0, classes='my-table')
+summary_call_chat_non_rf_to_html = summary_call_chat_non_rf.style.apply(highlight_cells, axis=1).to_html(index=False, border=0, classes='my-table')
 
 # %%
 # --- Convert ke HTML ---
@@ -371,9 +386,6 @@ html_summary = f"""
    <h3>CALL & CHAT BREAKDOWN</h3>
    {summary_call_chat_non_rf_to_html}
 
-   <!-- Section 3 -->
-   <h3>RING FENCE</h3>
-   {summary_call_chat_with_rf_to_html}
    <br>
    This is automatic email and the mailbox not monitored. Do not reply to this email
 
@@ -433,13 +445,7 @@ def send_email(uname,email_encr,email_address,host,header,html_file_path,email_s
             m.attach(attachment)
     m.send_and_save()
 
-# %%
-# email_list = ['']
-# email_cc = ['']
-# subject_email = fr'EOD IDCCTR PERFORMANCE {(datetime.now()-timedelta(1)).strftime('%d %B %Y')}'
-# html_path = fr"\\10.232.27.11\cctr$\Report\Scripts\AUTOMATION_DAILY_IDCCTR_PERFORMANCE\EOD_PERFORMANCE\summary_eod_{(datetime.now()-timedelta(1)).strftime('%Y%m%d')}.html"
-# attachment_paths = [html_path]
-
+#%%
 email_list = ['ovantitus@dbs.com']
 email_cc = ['ovantitus@dbs.com']
 subject_email = fr'[Do not reply] EOD Performance Report IDCCTR {(datetime.now()-timedelta(1)).strftime('%d %B %Y')}'
