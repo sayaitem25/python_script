@@ -1,1 +1,452 @@
-test
+# %%
+import os
+import pandas as pd
+import numpy as np
+import win32com.client
+import zipfile
+from datetime import datetime, timedelta
+from exchangelib import Credentials, Account, Message, HTMLBody, FileAttachment, Configuration, DELEGATE
+import base64
+
+# %%
+SAVE_PATH = r"\\10.232.27.11\cctr$\Report\Scripts\AUTOMATION_DAILY_IDCCTR_PERFORMANCE\EOD_PERFORMANCE\SOURCE_DATA"     # Destination Folder
+FOLDER_PATH = ["CUIC_AHT_EXPERIMENT"]                 # root folder in outlook
+LOG_FILE = os.path.join(r'\\10.232.27.11\cctr$\Report\Scripts\AUTOMATION_DAILY_IDCCTR_PERFORMANCE', "download_log.txt")
+SUBJECT_KEYWORD = "AHT_EXPERIMENT_IDCCTR_EOD"     # filter subject email
+
+os.makedirs(SAVE_PATH, exist_ok=True)
+
+# %%
+# === log function ===
+def log(message):
+   """Read and show log in command python"""
+   timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+   log_line = f"[{timestamp}] {message}"
+   print(log_line)
+   with open(LOG_FILE, "a", encoding="utf-8") as f:
+       f.write(log_line + "\n")
+
+# %%
+# === Outlook Connection ===
+try:
+   outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
+   inbox = outlook.GetDefaultFolder(6)  # 6 = Inbox
+   log("Connected to Outlook.")
+except Exception as e:
+   log(f"Failed to access Outlook: {e}")
+   raise SystemExit()
+
+# %%
+# === Access Outlook Folder ===
+try:
+   target_folder = inbox
+   for name in FOLDER_PATH:
+       target_folder = target_folder.Folders[name]
+   log(f"Accessing folder: {' > '.join(FOLDER_PATH)}")
+except Exception as e:
+   log(f"Folder Not Found!: {e}")
+   raise SystemExit()
+
+# %%
+# === Get latest email with filter subject "AHT Experiment IDCCTR" ===
+try:
+   messages = target_folder.Items
+   messages.Sort("[ReceivedTime]", True)  # descending
+   latest = None
+   for msg in messages:
+       if SUBJECT_KEYWORD.lower() in msg.Subject.lower():
+           latest = msg
+           break
+except Exception as e:
+   log(f"Failed to read email: {e}")
+   raise SystemExit()
+
+if not latest:
+   log(f"No email with containing subject: '{SUBJECT_KEYWORD}'.")
+   log("--------------------------------------------------\n")
+   raise SystemExit()
+
+log(f"Email found: {latest.Subject} | Sender: {latest.SenderEmailAddress}")
+
+# %%
+# === SIMPAN ATTACHMENT + AUTO UNZIP + RENAME TIMESTAMP ===
+if latest.Attachments.Count > 0:
+   for att in latest.Attachments:
+       file_name = att.FileName
+       file_path = os.path.join(SAVE_PATH, file_name)
+
+       try:
+           att.SaveAsFile(file_path)
+           log(f"saved_eod_file: {file_path}")
+
+           # kalau .zip, unzip dan rename hasilnya
+           if file_name.lower().endswith(".zip"):
+               timestamp = (datetime.now()-timedelta(1)).strftime("%Y%m%d")
+               try:
+                   with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                       for inner_name in zip_ref.namelist():
+                           base, ext = os.path.splitext(inner_name)
+                           new_name = f"EOD_{base}_{timestamp}{ext}"
+                           extract_path = os.path.join(SAVE_PATH, new_name)
+                           with zip_ref.open(inner_name) as src, open(extract_path, 'wb') as dst:
+                               dst.write(src.read())
+                           log(f"unzipped_EOD_File: {new_name}")
+               except Exception as e:
+                   log(f"failed_unzip_eod_file: {e}")
+
+       except Exception as e:
+           log(f"failed_saved_attachment: '{file_name}': {e}")
+else:
+   log("No attachment on this email")
+
+log("Program finished")
+log("--------------------------------------------------\n")
+
+# %%
+excel_file_name = [os.path.join(SAVE_PATH, f) for f in os.listdir(SAVE_PATH) if f.lower().endswith(".xlsx") and 'aht_experiment_idcctr_eod' in f.lower()]
+latest_file = max(excel_file_name, key=os.path.getmtime)
+print(latest_file)
+df_cuic = pd.read_excel(latest_file, skiprows=1, engine='openpyxl', dtype=str)
+
+# %%
+df_call_type = pd.read_excel(r'\\10.232.27.11\cctr$\Report\Scripts\AUTOMATION_DAILY_IDCCTR_PERFORMANCE\call_type_cuic.xlsx', dtype=str)
+
+# %%
+first_row = df_cuic.iloc[0]
+cols = df_cuic.columns.to_list()
+
+new_cols = []
+for i, col in enumerate(cols):
+    if str(col).startswith("Unnamed"):
+        new_cols.append(str(first_row[i]))
+    else:
+        new_cols.append(col)
+df_cuic.columns = new_cols
+df_cuic = df_cuic.iloc[1:].reset_index(drop=True)
+
+df_cuic['Precision Queue'] = df_cuic['Precision Queue'].ffill()
+
+df_raw = df_cuic[~df_cuic['Media'].isnull()].copy()
+df_raw['DateTime_Convert'] = pd.to_datetime(df_raw['DateTime'])
+df_raw = df_raw.sort_values(by='DateTime_Convert', ascending=False).reset_index(drop=True)
+
+
+# %%
+df_raw['logged_time_sec'] = pd.to_timedelta(df_raw['Logged On Time']).dt.total_seconds().astype(int)
+
+df_raw['talk_time_sec'] = pd.to_timedelta(df_raw['HandledCallTalkTime']).dt.total_seconds().astype(int)
+
+df_raw['%Hold'] = df_raw['%Hold'].astype(float)
+df_raw['hold_time_sec'] = (df_raw['logged_time_sec'] * df_raw['%Hold']).round(2)
+
+df_raw['%Wrap Up'] = df_raw['%Wrap Up'].astype(float)
+df_raw['wrap_up_sec'] = (df_raw['logged_time_sec'] * df_raw['%Wrap Up']).round(2)
+
+df_raw['total_handling_time'] = df_raw['talk_time_sec'] + df_raw['hold_time_sec'] + df_raw['wrap_up_sec']
+
+# %%
+df_raw['Answered'] = df_raw['Answered'].astype(int)
+df_raw['aht_sec'] = np.where(df_raw['Answered'] > 0, (df_raw['total_handling_time'] / df_raw['Answered']).round(2), 0)
+df_raw['ServiceLevelCallsOffered'] = df_raw['ServiceLevelCallsOffered'].astype(int)
+df_raw['Answer'] = df_raw['Answer'].astype(int)
+df_raw['Abandoned'] = df_raw['Abandoned'].astype(int)
+
+# %%
+df_raw = pd.merge(df_raw,df_call_type,on='Precision Queue',how='left')
+
+# %%
+call_chat_non_rf = df_raw[df_raw['Call Type'].isin(['CALL - CARD','CALL - DIGI','CALL - LOAN','CALL - TRTPC','CHAT - Mass Market','CHAT - TRTPC'])].copy()
+call_chat_with_rf = df_raw[~df_raw['Call Type'].isin(['CALL - CARD','CALL - DIGI','CALL - LOAN','CALL - TRTPC','CHAT - Mass Market','CHAT - TRTPC'])].copy()
+
+centrewide = df_raw[df_raw['Wallboard_Type'] == 'Centrewide'].copy()
+centrewide['Wallboard_Type'] = centrewide['Wallboard_Type'].str.upper()
+
+
+# %%
+summary_centrewide = (centrewide.groupby('Wallboard_Type', as_index=False).agg({
+    'ServiceLevelCallsOffered':'sum',
+    'Answer':'sum',
+    'Answered':'sum',
+    'Abandoned':'sum',
+    'logged_time_sec':'sum',
+    'talk_time_sec':'sum',
+    'hold_time_sec':'sum',
+    'wrap_up_sec':'sum',
+    'total_handling_time':'sum'
+}))
+
+# %%
+summary_centrewide['AHT'] = (summary_centrewide['total_handling_time'] / summary_centrewide['Answered']).round(0).astype(int)
+summary_centrewide['Service Level'] = ((summary_centrewide['Answer'] / summary_centrewide['ServiceLevelCallsOffered']) * 100).round(1).fillna(0).astype(str) + '%'
+summary_centrewide['Talk Time'] = (summary_centrewide['talk_time_sec'] / summary_centrewide['Answered']).round(0).astype(int)
+summary_centrewide['Hold Time'] = (summary_centrewide['hold_time_sec'] / summary_centrewide['Answered']).round(0).astype(int)
+summary_centrewide['Wrap Up Time'] = (summary_centrewide['wrap_up_sec'] / summary_centrewide['Answered']).round(0).astype(int)
+summary_centrewide = summary_centrewide.fillna(0)
+summary_centrewide = summary_centrewide[['Wallboard_Type','ServiceLevelCallsOffered','Service Level','AHT','Talk Time','Hold Time','Wrap Up Time','Abandoned']]
+summary_centrewide = summary_centrewide.rename(columns={'Wallboard_Type':'GROUP'})
+
+# %%
+summary_call_chat = (centrewide.groupby('Channel', as_index=False).agg({
+    'ServiceLevelCallsOffered':'sum',
+    'Answer':'sum',
+    'Answered':'sum',
+    'Abandoned':'sum',
+    'logged_time_sec':'sum',
+    'talk_time_sec':'sum',
+    'hold_time_sec':'sum',
+    'wrap_up_sec':'sum',
+    'total_handling_time':'sum'
+}))
+
+# %%
+summary_call_chat['AHT'] = (summary_call_chat['total_handling_time'] / summary_call_chat['Answered']).round(0).astype(int)
+summary_call_chat['Service Level'] = ((summary_call_chat['Answer'] / summary_call_chat['ServiceLevelCallsOffered']) * 100).round(1).fillna(0).astype(str) + '%'
+summary_call_chat['Talk Time'] = (summary_call_chat['talk_time_sec'] / summary_call_chat['Answered']).round(0).astype(int)
+summary_call_chat['Hold Time'] = (summary_call_chat['hold_time_sec'] / summary_call_chat['Answered']).round(0).astype(int)
+summary_call_chat['Wrap Up Time'] = (summary_call_chat['wrap_up_sec'] / summary_call_chat['Answered']).round(0).astype(int)
+summary_call_chat = summary_call_chat.fillna(0)
+summary_call_chat = summary_call_chat[['Channel','ServiceLevelCallsOffered','Service Level','AHT','Talk Time','Hold Time','Wrap Up Time','Abandoned']]
+
+# %%
+summary_call_chat_non_rf = (call_chat_non_rf.groupby('Call Type', as_index=False).agg({
+    'ServiceLevelCallsOffered':'sum',
+    'Answer':'sum',
+    'Answered':'sum',
+    'Abandoned':'sum',
+    'logged_time_sec':'sum',
+    'talk_time_sec':'sum',
+    'hold_time_sec':'sum',
+    'wrap_up_sec':'sum',
+    'total_handling_time':'sum'
+}))
+
+# %%
+summary_call_chat_non_rf['AHT'] = (summary_call_chat_non_rf['total_handling_time'] / summary_call_chat_non_rf['Answered']).round(0).astype(int)
+summary_call_chat_non_rf['Service Level'] = ((summary_call_chat_non_rf['Answer'] / summary_call_chat_non_rf['ServiceLevelCallsOffered']) * 100).round(1).fillna(0).astype(str) + '%'
+summary_call_chat_non_rf['Talk Time'] = (summary_call_chat_non_rf['talk_time_sec'] / summary_call_chat_non_rf['Answered']).round(0).astype(int)
+summary_call_chat_non_rf['Hold Time'] = (summary_call_chat_non_rf['hold_time_sec'] / summary_call_chat_non_rf['Answered']).round(0).astype(int)
+summary_call_chat_non_rf['Wrap Up Time'] = (summary_call_chat_non_rf['wrap_up_sec'] / summary_call_chat_non_rf['Answered']).round(0).astype(int)
+summary_call_chat_non_rf = summary_call_chat_non_rf.fillna(0)
+summary_call_chat_non_rf = summary_call_chat_non_rf[['Call Type','ServiceLevelCallsOffered','Service Level','AHT','Talk Time','Hold Time','Wrap Up Time','Abandoned']]
+summary_call_chat_non_rf = summary_call_chat_non_rf.rename(columns={'Call Type':'GROUP'})
+
+# %%
+summary_call_chat_with_rf = (call_chat_with_rf.groupby('Call Type', as_index=False).agg({
+    'ServiceLevelCallsOffered':'sum',
+    'Answer':'sum',
+    'Answered':'sum',
+    'Abandoned':'sum',
+    'logged_time_sec':'sum',
+    'talk_time_sec':'sum',
+    'hold_time_sec':'sum',
+    'wrap_up_sec':'sum',
+    'total_handling_time':'sum'
+}))
+
+# %%
+def safe_divide(df, num_col, den_col):
+   result = df[num_col] / df[den_col]
+   result = result.replace([np.inf, -np.inf], 0)
+   result = result.fillna(0)
+   return result.round(0).astype(int)
+
+summary_call_chat_with_rf['AHT'] = safe_divide(summary_call_chat_with_rf, 'total_handling_time', 'Answered')
+summary_call_chat_with_rf['Service Level'] = ((summary_call_chat_with_rf['Answer'] / summary_call_chat_with_rf['ServiceLevelCallsOffered']) * 100).round(1).fillna(0).astype(str) + '%'
+summary_call_chat_with_rf['Talk Time'] = safe_divide(summary_call_chat_with_rf, 'talk_time_sec', 'Answered')
+summary_call_chat_with_rf['Hold Time'] = safe_divide(summary_call_chat_with_rf, 'hold_time_sec', 'Answered')
+summary_call_chat_with_rf['Wrap Up Time'] = safe_divide(summary_call_chat_with_rf, 'wrap_up_sec', 'Answered')
+summary_call_chat_with_rf = summary_call_chat_with_rf.fillna(0)
+summary_call_chat_with_rf = summary_call_chat_with_rf[['Call Type','ServiceLevelCallsOffered','Service Level','AHT','Talk Time','Hold Time','Wrap Up Time','Abandoned']]
+summary_call_chat_with_rf = summary_call_chat_with_rf.rename(columns={'Call Type':'GROUP'})
+
+# %%
+summary_centrewide_to_html = summary_centrewide.to_html(index=False, border=0, classes='my-table')
+summary_call_chat_to_html = summary_call_chat.to_html(index=False, border=0, classes='my-table')
+summary_call_chat_non_rf_to_html = summary_call_chat_non_rf.to_html(index=False, border=0, classes='my-table')
+summary_call_chat_with_rf_to_html = summary_call_chat_with_rf.to_html(index=False, border=0, classes='my-table')
+
+# %%
+# --- Convert ke HTML ---
+html_summary = f"""
+<html>
+<head>
+<meta charset="utf-8">
+<title>EOD IDCCTR Performance</title>
+<style>
+   body {{
+       font-family: Arial, sans-serif;
+       margin: 20px;
+       background-color: #ffffff;
+   }}
+
+   /* --- Header Utama --- */
+   h2 {{
+       margin-top: 10px;
+       margin-bottom: 30px;
+       color: #154360;
+       font-size: 30px;
+       font-weight: 700;
+       text-align: center;
+       letter-spacing: 1px;
+       text-transform: uppercase;
+       border-bottom: 3px solid #1a5276;
+       padding-bottom: 8px;
+   }}
+
+   /* --- Subjudul Section --- */
+   h3 {{
+       margin-top: 40px;
+       margin-bottom: 15px;
+       color: #2c3e50;
+       font-size: 20px;
+       border-bottom: 1px solid #aaa;
+       padding-bottom: 5px;
+   }}
+
+   /* --- Informasi Update Tanggal --- */
+   .update-info {{
+       text-align: right;
+       font-size: 14px;
+       color: #555;
+       margin-bottom: 10px;
+       line-height: 1.2;
+   }}
+
+   .update-info .datetime {{
+       font-weight: bold;
+       color: #1a5276;
+   }}
+
+   .update-info .time {{
+       font-style: italic;
+       color: #666;
+   }}
+
+   /* --- Tabel --- */
+   table {{
+       border-collapse: collapse;
+       width: 100%;
+       margin-bottom: 25px;
+       table-layout: fixed;
+       font-size: 16px;
+   }}
+
+   th, td {{
+       border: 1px solid #ccc;
+       padding: 8px 10px;
+       text-align: center;
+       word-wrap: break-word;
+   }}
+
+   th {{
+       background-color: #eaf2f8;
+       font-weight: bold;
+       color: #154360;
+   }}
+
+   td:first-child {{
+       text-align: left;
+   }}
+
+</style>
+</head>
+<body>
+
+   <!-- Update Info -->
+   <div class="update-info">
+       <p>Last Updated:</p>
+       <p class="datetime">{(datetime.now()-timedelta(1)).strftime("%d %B %Y")}</p>
+   </div>
+
+   <!-- Judul Utama -->
+   <h2>EOD REPORT ID CCTR PERFORMANCE</h2>
+
+   <!-- Section 1 -->
+   <h3>CENTREWIDE PERFORMANCE</h3>
+   {summary_centrewide_to_html}
+   <br>
+   {summary_call_chat_to_html}
+
+   <!-- Section 2 -->
+   <h3>CALL & CHAT BREAKDOWN</h3>
+   {summary_call_chat_non_rf_to_html}
+
+   <!-- Section 3 -->
+   <h3>RING FENCE</h3>
+   {summary_call_chat_with_rf_to_html}
+   <br>
+   This is automatic email and the mailbox not monitored. Do not reply to this email
+
+</body>
+</html>
+"""
+
+# --- Simpan ke file HTML ---
+with open(fr"\\10.232.27.11\cctr$\Report\Scripts\AUTOMATION_DAILY_IDCCTR_PERFORMANCE\EOD_PERFORMANCE\summary_eod_{(datetime.now()-timedelta(1)).strftime('%Y%m%d')}.html", "w", encoding="utf-8") as f:
+   f.write(html_summary)
+
+# %%
+#%% Configuration Auto Email
+
+email_address= 'idcctrwfm@dbs.com'
+uname= 'reg1\idcctrwfm'
+email_encr= 'U2Vwb2N0MjAyNQ=='
+
+host = 'websvca.1bank.dbs.com'
+
+
+def send_email(uname,email_encr,email_address,host,header,html_file_path,email_send,email_cc, attachment_paths):
+    
+    base64_bytes = email_encr.encode('ascii')
+    message_bytes = base64.b64decode(base64_bytes)
+    passw = message_bytes.decode('ascii')
+    credentials = Credentials(uname, passw)
+    config = Configuration(server=host,credentials=credentials)
+    account = Account(primary_smtp_address=email_address,config=config,autodiscover=False,access_type=DELEGATE)
+    with open(html_file_path, 'r', encoding="utf-8") as f:
+        html_content = f.read()
+
+    html_content = html_content.replace(
+        "<style>",
+        "<style>table {border-collapse: collapse; width:100%; font-size:14px;} "
+        "th,td {border:1px solid #ccc; padding:6px;} "
+        "th {background-color:#f0f0f0;}"
+   )
+
+    m = Message(
+        account=account,
+        folder=account.drafts,
+        subject=header ,
+        body=HTMLBody(html_content),
+        to_recipients=email_send,
+        cc_recipients=email_cc
+    )
+
+    for path in attachment_paths:
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                content = f.read()
+            attachment = FileAttachment(
+                name=os.path.basename(path),
+                content = content
+            )
+            m.attach(attachment)
+    m.send_and_save()
+
+# %%
+# email_list = ['dbsit&ocbgcustomercentre-operations@1bank.dbs.com']
+# email_cc = ['dbsit&ocbgcustomercentreresourceplanning@1bank.dbs.com','dbsit&omiscctr@1bank.dbs.com','dbsit&ocbgcustomercentremanagementteam@1bank.dbs.com']
+# subject_email = fr'EOD IDCCTR PERFORMANCE {(datetime.now()-timedelta(1)).strftime('%d %B %Y')}'
+# html_path = fr"\\10.232.27.11\cctr$\Report\Scripts\AUTOMATION_DAILY_IDCCTR_PERFORMANCE\EOD_PERFORMANCE\summary_eod_{(datetime.now()-timedelta(1)).strftime('%Y%m%d')}.html"
+# attachment_paths = [html_path]
+
+email_list = ['ovantitus@dbs.com']
+email_cc = ['ovantitus@dbs.com']
+subject_email = fr'[Do not reply] EOD Performance Report IDCCTR {(datetime.now()-timedelta(1)).strftime('%d %B %Y')}'
+html_path = fr"\\10.232.27.11\cctr$\Report\Scripts\AUTOMATION_DAILY_IDCCTR_PERFORMANCE\EOD_PERFORMANCE\summary_eod_{(datetime.now()-timedelta(1)).strftime('%Y%m%d')}.html"
+attachment_paths = [html_path]
+
+# %%
+send_email(uname,email_encr,email_address,host,subject_email,html_path,email_list,email_cc,attachment_paths)
+
+
