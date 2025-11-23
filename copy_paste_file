@@ -1,0 +1,36 @@
+import os
+import shutil
+import re
+
+# Folder sumber (berisi subfolder 2025Aug01, 2025Aug02, dst)
+source_root = r"C:\path\to\source"
+
+# Folder tujuan (subfolder akan dibuat otomatis jika belum ada)
+target_root = r"C:\path\to\target"
+
+# Regex untuk format folder: 2025Aug01
+pattern = re.compile(r"^\d{4}[A-Za-z]{3}\d{2}$")
+
+# Loop semua subfolder di source
+for folder_name in os.listdir(source_root):
+   source_folder = os.path.join(source_root, folder_name)
+
+   # Cek apakah benar subfolder dan cocok pola YYYYMonDD
+   if os.path.isdir(source_folder) and pattern.match(folder_name):
+       print(f"Processing folder: {folder_name}")
+
+       # Buat target folder jika belum ada
+       target_folder = os.path.join(target_root, folder_name)
+       os.makedirs(target_folder, exist_ok=True)
+
+       # Copy semua file dalam subfolder
+       for file_name in os.listdir(source_folder):
+           file_source_path = os.path.join(source_folder, file_name)
+           file_target_path = os.path.join(target_folder, file_name)
+
+           # Copy hanya file
+           if os.path.isfile(file_source_path):
+               shutil.copy2(file_source_path, file_target_path)
+               print(f" - Copied: {file_name}")
+
+print("Done copying files!")
